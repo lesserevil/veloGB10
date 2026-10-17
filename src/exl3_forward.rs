@@ -3898,6 +3898,10 @@ fn recon_min_rows() -> usize {
 /// bits-generic, which is why the default `--exl3-recon-min 17` is safe for the 4.05 pack's 6-bit modules.
 pub(crate) fn wide_trellis_supports_bits(bits: usize) -> bool { (3..=5).contains(&bits) }
 
+/// Device-routed expert tiles have a conservative wider-bit fallback. Dense
+/// prefill keeps using reconstruction for these widths; its policy is separate.
+pub(crate) fn expert_tiles_support_bits(bits: usize) -> bool { (3..=6).contains(&bits) }
+
 /// The pipelined prefill MoE expert kernels (`xq_moe_pf*`, `--pf-moe-kernel`) decode 3- and 4-bit trellises only.
 pub(crate) fn moe_pf_kernel_supports_bits(bits: usize) -> bool { matches!(bits, 3 | 4) }
 
@@ -13639,17 +13643,19 @@ impl FwdModel {
             let ne = ne_eff;
             let max_tiles = (r / 16 + ne) as u32;
             // A5-P1 knobs (all bitwise; default OFF): pipelined kernel, WP19 per-expert MT, glue fold.
-            let pk = tune::get(&T_PF_MOE_KERNEL, &l.cx()) != 0 && mi % 128 == 0 && h % 128 == 0;
+            let pk = tune::get(&T_PF_MOE_KERNEL, &l.cx()) != 0 && mi % 128 == 0 && h % 128 == 0
+                && moe_pf_kernel_supports_bits(moe.bits);
             // S-B9-REL-INTEG D1: both arms switch on `bits` with `default: break;` (a launch that writes nothing):
-            // xq_moe_pf* knows 3 and 4, exl3_hmma_gemm_wide_tiles 3, 4 and 5. Refuse before the first launch.
+            // xq_moe_pf* knows 3 and 4; wider experts automatically use the
+            // conservative tiles fallback (3..6). Refuse before the first launch.
             if pk {
                 anyhow::ensure!(moe_pf_kernel_supports_bits(moe.bits),
                     "EXL3 prefill MoE: the pipelined expert kernel (xq_moe_pf*, on by default; --pf-moe-kernel) decodes 3- and 4-bit \
 trellises only and would leave the output of this layer's {}-bit routed experts unwritten (HTTP 200 with garbage); \
-boot with --pf-moe-kernel off to use the wide tiles kernel (3..5 bits)", moe.bits);
+boot with --pf-moe-kernel off to use the wide tiles kernel (3..6 bits)", moe.bits);
             } else {
-                anyhow::ensure!(wide_trellis_supports_bits(moe.bits),
-                    "EXL3 prefill MoE: the wide tiles kernel (exl3_hmma_gemm_wide_tiles) decodes 3-, 4- and 5-bit trellises only and \
+                anyhow::ensure!(expert_tiles_support_bits(moe.bits),
+                    "EXL3 prefill MoE: the wide tiles kernel (exl3_hmma_gemm_wide_tiles) decodes 3..6-bit trellises only and \
 would leave the output of this layer's {}-bit routed experts unwritten (HTTP 200 with garbage)", moe.bits);
             }
             let pe = tune::get(&T_PF_MOE_MT_PE, &l.cx()) != 0 && psc.pf_tiles4.len() > 1;
@@ -22206,13 +22212,17 @@ mod wide_bits_guard_tests {
         for b in [0usize, 1, 2, 6, 7, 8] { assert!(!wide_trellis_supports_bits(b), "{b}"); }
         for b in [3usize, 4] { assert!(moe_pf_kernel_supports_bits(b), "{b}"); }
         for b in [0usize, 1, 2, 5, 6, 8] { assert!(!moe_pf_kernel_supports_bits(b), "{b}"); }
-        // the kernel source agrees (the K6 module adds `case 6` to the OTHER switches, not to these)
+        // Dense wide kernels remain 3..5; only the expert tiles entry extends to 6.
         let cu = include_str!("../kernels/exl3_bench.cu");
-        for sw in ["switch (bits) { EXL3_WT_CASE(3) EXL3_WT_CASE(4) EXL3_WT_CASE(5) default: break; }",
+        for sw in ["switch (bits) { EXL3_WT_CASE(3) EXL3_WT_CASE(4) EXL3_WT_CASE(5) EXL3_CASE6(EXL3_WT_CASE(6)) default: break; }",
                    "switch (bits) { EXL3_WG_CASE(3) EXL3_WG_CASE(4) EXL3_WG_CASE(5) default: break; }",
                    "EXL3_WIDE_CASE(3);\n        EXL3_WIDE_CASE(4);\n        EXL3_WIDE_CASE(5);\n        default: break;"] {
             assert!(cu.contains(sw), "the wide kernel's bit switch changed (a 6-bit case?): update wide_trellis_supports_bits\n{sw}");
         }
+        for b in 0..=9 {
+            assert_eq!(expert_tiles_support_bits(b), (3..=6).contains(&b));
+        }
+        assert!(cu.contains("8 * EXL3_COOP_MAX_BITS"));
     }
 
     #[test]
@@ -22260,7 +22270,7 @@ mod wide_bits_guard_tests {
         assert!(g < l, "the bit-width guard must come before the wide launch");
         let m = &src[src.find("let pk = tune::get(&T_PF_MOE_KERNEL").expect("pk")..];
         let (g1, g2, l) = (m.find("moe_pf_kernel_supports_bits(moe.bits)").expect("pf guard"),
-                           m.find("wide_trellis_supports_bits(moe.bits)").expect("tiles guard"),
+                           m.find("expert_tiles_support_bits(moe.bits)").expect("tiles guard"),
                            m.find("\"xq_moe_pf_count").expect("first launch"));
         assert!(g1 < l && g2 < l, "the MoE guards must come before the first MoE launch");
     }
