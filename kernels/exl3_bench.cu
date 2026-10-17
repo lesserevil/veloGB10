@@ -1335,7 +1335,7 @@ extern "C" __global__ void exl3_hmma_gemm_wide_grouped(const uint16_t* __restric
         case 4: exl3_gemm_body_wide<B, 4>(tr, xe, ye, ce, K, N, cta_tile, m_sup, xq_wide_sa); break; \
         case 8: exl3_gemm_body_wide<B, 8>(tr, xe, ye, ce, K, N, cta_tile, m_sup, xq_wide_sa); break; \
         default: break; } break;
-    switch (bits) { EXL3_WG_CASE(3) EXL3_WG_CASE(4) EXL3_WG_CASE(5) default: break; }
+    switch (bits) { EXL3_WG_CASE(3) EXL3_WG_CASE(4) EXL3_WG_CASE(5) EXL3_CASE6(EXL3_WG_CASE(6) EXL3_WG_CASE(7) EXL3_WG_CASE(8)) default: break; }
 #undef EXL3_WG_CASE
 }
 
@@ -1376,6 +1376,7 @@ extern "C" __global__ void exl3_hmma_gemm_wide(const uint16_t* __restrict__ trel
         EXL3_WIDE_CASE(3);
         EXL3_WIDE_CASE(4);
         EXL3_WIDE_CASE(5);
+        EXL3_CASE6(EXL3_WIDE_CASE(6); EXL3_WIDE_CASE(7); EXL3_WIDE_CASE(8);)
         default: break; // loader refuses other rates before we ever get here
     }
 #undef EXL3_WIDE_CASE
@@ -10889,6 +10890,7 @@ extern "C" __global__ void xq_gemm_grouped_rows(const uint16_t* __restrict__ bas
         EXL3_ROWS_CASE(3);
         EXL3_ROWS_CASE(4);
         EXL3_ROWS_CASE(5);
+        EXL3_CASE6(EXL3_ROWS_CASE(6); EXL3_ROWS_CASE(7); EXL3_ROWS_CASE(8);)
         default: break;
     }
 #undef EXL3_ROWS_CASE

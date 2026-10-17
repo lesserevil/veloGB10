@@ -912,6 +912,42 @@ pub fn probe_bitwidths() -> Result<()> {
                         cases += 1;
                     }
                 }
+                // Dense/auxiliary prefill can lack reconstruction buffers. Test
+                // every generic wide entry, not only the expert tile-list entry.
+                let counts = dev.htod_sync_copy(&[m as i32])?;
+                let rows = dev.htod_sync_copy(&[0i32])?;
+                let tokens = dev.htod_sync_copy(&(0..m as i32).collect::<Vec<_>>())?;
+                let mut first_wide = Vec::new();
+                for mt in [1usize, 2, 4, 8] {
+                    let msup = m.div_ceil(16 * mt) as u32;
+                    for name in ["exl3_hmma_gemm_wide", "exl3_hmma_gemm_wide_grouped", "xq_gemm_grouped_rows"] {
+                        let mut y = dev.htod_sync_copy(&vec![0xFFFFu16; m * n])?;
+                        let f = dev.get_func(MODULE, name).context("wide GEMM entry")?;
+                        unsafe {
+                            if name == "exl3_hmma_gemm_wide" {
+                                f.launch_on_stream(&stream, cfg(msup, (n / 128) as u32, 256),
+                                    (&tr, &dx, &mut y, m as i32, k as i32, n as i32, bits as i32, mt as i32))?;
+                            } else if name == "exl3_hmma_gemm_wide_grouped" {
+                                f.launch_on_stream(&stream, cfg(msup, (n / 128) as u32, 256),
+                                    (&tr, &offsets, &dx, &mut y, &rows, &counts,
+                                     k as i32, n as i32, bits as i32, mt as i32, 0i32))?;
+                            } else {
+                                f.launch_on_stream(&stream,
+                                    LaunchConfig { grid_dim: (1, (n / 128) as u32, msup), block_dim: (256, 1, 1), shared_mem_bytes: 0 },
+                                    (&tr, &offsets, &dx, &tokens, &rows, &counts, &mut y,
+                                     k as i32, n as i32, bits as i32, mt as i32))?;
+                            }
+                        }
+                        dev.synchronize()?;
+                        let got = dev.dtoh_sync_copy(&y)?;
+                        check(&got, &reference, name)?;
+                        anyhow::ensure!(got[..n] == row0, "{bits}-bit dense wide row invariance failed");
+                        if !baseline.is_empty() { anyhow::ensure!(got == baseline, "{bits}-bit dense wide differs from m16"); }
+                        if first_wide.is_empty() { first_wide = got; }
+                        else { anyhow::ensure!(first_wide == got, "{bits}-bit dense wide depends on MT/entry"); }
+                        cases += 1;
+                    }
+                }
                 if bits <= 6 {
                     let counts = dev.htod_sync_copy(&[m as i32])?;
                     let rows = dev.htod_sync_copy(&[0i32])?;

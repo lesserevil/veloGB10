@@ -468,7 +468,8 @@ Don't want to build? Use the prebuilt package on the [**Releases** page](https:/
 The extended kernel bundle (historical filename `exl3_bench_k6.ptx`) supports
 6-, 7-, and 8-bit generic decode/GEMM paths. Selection uses actual trellis
 headers, including auxiliary tensors, rather than the pack's average bit rate.
-Dense prefill above 5 bits retains reconstruction plus cuBLASLt. Device-routed
+Dense prefill above 5 bits prefers reconstruction plus cuBLASLt where buffers
+exist; auxiliary call sites without those buffers use generic 3..8-bit wide GEMMs. Device-routed
 6-bit experts automatically use the generic wide-tiles prefill fallback;
 the optimized pipelined expert-prefill kernels remain 3/4-bit only. This does
 not add 7/8-bit expert prefill or extend every specialized fast path.
